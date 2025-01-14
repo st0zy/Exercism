@@ -55,6 +55,7 @@ const (
 	ClockWiseTurn     Action = "Turned Right"
 	AntiClockWiseTurn Action = "Turned Left"
 	Created           Action = "Created"
+	Stop              Action = "Stopped"
 )
 
 func StartRobot(commands chan Command, action chan Action) {
@@ -151,12 +152,11 @@ type Action3 struct {
 
 func StartRobot3(name, script string, action chan Action3, log chan string) {
 	go func() {
-		defer close(action)
-
 		action <- Action3{
 			Created,
 			name,
 		}
+	forloop:
 		for _, command := range script {
 			fmt.Println(command)
 			switch command {
@@ -177,6 +177,7 @@ func StartRobot3(name, script string, action chan Action3, log chan string) {
 				}
 			default:
 				log <- "Bad command"
+				break forloop
 			}
 		}
 	}()
@@ -197,15 +198,22 @@ func Room3(extent Rect, robots []Step3Robot, actions chan Action3, rep chan []St
 				fmt.Println("Creating robot", robot_name)
 				if !withinRoom(extent, robots[robot_id].Step2Robot) {
 					log <- "Robot outside the area"
+					break
 				}
 				if robot_name == "" {
 					log <- "no name robot craeted"
+					break
 				}
 				for i, robot := range robots {
 					if _, ok := robotsInRoom[robot.Name]; ok {
 						log <- "Robot with the name already exists."
+						break
 					}
 					robotsInRoom[robot.Name] = i
+					if _, ok := currentPosition[robot.Pos]; ok {
+						log <- "Robot exists in same position"
+						break
+					}
 					currentPosition[robot.Pos] = true
 				}
 
