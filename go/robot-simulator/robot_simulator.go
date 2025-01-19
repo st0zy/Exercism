@@ -1,8 +1,8 @@
 package robot
 
 import (
-	"fmt"
 	"strconv"
+	"sync"
 )
 
 // See defs.go for other definitions
@@ -79,21 +79,23 @@ func StartRobot(commands chan Command, action chan Action) {
 }
 
 func Move(robot *Step2Robot) {
+	newPosition := newPositionOnMoving(*robot)
+	robot.Pos = newPosition
+}
+
+func newPositionOnMoving(robot Step2Robot) Pos {
 	switch robot.Dir {
 	case N:
 		robot.Pos.Northing++
 	case E:
 		robot.Pos.Easting++
-
 	case S:
 		robot.Pos.Northing--
 
 	case W:
 		robot.Pos.Easting--
-	default:
-		panic("unknown directions")
 	}
-
+	return robot.Pos
 }
 
 func Room(extent Rect, robot Step2Robot, actions chan Action, report chan Step2Robot) {
@@ -158,7 +160,7 @@ func StartRobot3(name, script string, action chan Action3, log chan string) {
 		}
 	forloop:
 		for _, command := range script {
-			fmt.Println(command)
+			// fmt.Println(command)
 			switch command {
 			case 'A':
 				action <- Action3{
@@ -180,62 +182,93 @@ func StartRobot3(name, script string, action chan Action3, log chan string) {
 				break forloop
 			}
 		}
+
+		// fmt.Println("Sending closure for ", name)
+		action <- Action3{
+			Stop,
+			name,
+		}
 	}()
 }
 
+var lock sync.Map
+
 func Room3(extent Rect, robots []Step3Robot, actions chan Action3, rep chan []Step3Robot, log chan string) {
 	var robotsInRoom = map[string]int{}
-	var currentPosition = map[Pos]any{}
+	var currentPosition sync.Map
+	numberOfRobotsLeftToStop := len(robots)
 
-	fmt.Println("Starting room")
+	// defer close(actions)
+	// fmt.Println("Starting room")
+
 	go func() {
-		for action := range actions {
-			robot_name := action.name
-			robot_id := robotsInRoom[robot_name]
-			switch action.Action {
+	loop:
+		for {
+			select {
+			case action := <-actions:
+				robot_name := action.name
+				robot_id, found := robotsInRoom[robot_name]
+				switch action.Action {
 
-			case Created:
-				fmt.Println("Creating robot", robot_name)
-				if !withinRoom(extent, robots[robot_id].Step2Robot) {
-					log <- "Robot outside the area"
-					break
-				}
-				if robot_name == "" {
-					log <- "no name robot craeted"
-					break
-				}
-				for i, robot := range robots {
-					if _, ok := robotsInRoom[robot.Name]; ok {
-						log <- "Robot with the name already exists."
-						break
+				case Created:
+					if found {
+						log <- "Robot with same name already exists."
+						continue
 					}
-					robotsInRoom[robot.Name] = i
-					if _, ok := currentPosition[robot.Pos]; ok {
-						log <- "Robot exists in same position"
-						break
+					// fmt.Println("Creating robot", robot_name)
+					if robot_name == "" {
+						log <- "no name robot created"
+						continue
 					}
-					currentPosition[robot.Pos] = true
+					for i, robot := range robots {
+						if robot.Name == robot_name {
+							robot_id = i
+							if _, ok := currentPosition.Load(robot.Pos); ok {
+								log <- "Robot exists at same position"
+								continue loop
+							}
+							currentPosition.Store(robot.Pos, true)
+						}
+					}
+					if !withinRoom(extent, robots[robot_id].Step2Robot) {
+						log <- "Robot outside the area"
+						continue
+					}
+					robotsInRoom[robot_name] = robot_id
+
+				case Moved:
+					if !movementWithinRoom(extent, robots[robot_id].Step2Robot) {
+						log <- "wall bump"
+						continue loop
+					}
+
+					newPosition := newPositionOnMoving(robots[robot_id].Step2Robot)
+					if _, ok := currentPosition.Load(newPosition); ok {
+						// fmt.Printf("%v", currentPosition)
+						log <- "Collisions"
+						continue
+					}
+					currentPosition.Delete(robots[robot_id].Step2Robot.Pos)
+					Move(&robots[robot_id].Step2Robot)
+					// fmt.Printf("%s moved to %v\n", robot_name, robots[robot_id].Step2Robot.Pos)
+					currentPosition.Store(newPosition, true)
+
+				case AntiClockWiseTurn:
+					TurnLeft(&robots[robot_id].Step2Robot)
+
+				case ClockWiseTurn:
+					TurnRight(&robots[robot_id].Step2Robot)
+
+				case Stop:
+					// fmt.Println("Received Stop signal for ", action.name)
+					numberOfRobotsLeftToStop--
+					if numberOfRobotsLeftToStop == 0 {
+						break loop
+					}
+					if numberOfRobotsLeftToStop < 0 {
+						panic("something is wrong")
+					}
 				}
-
-			case Moved:
-				if !movementWithinRoom(extent, robots[robot_id].Step2Robot) {
-					log <- "wall bump"
-					continue
-				}
-
-				delete(currentPosition, robots[robot_id].Step2Robot.Pos)
-				Move(&robots[robot_id].Step2Robot)
-				if _, ok := currentPosition[robots[robot_id].Step2Robot.Pos]; ok {
-					log <- "Collisions"
-					continue
-				}
-				currentPosition[robots[robot_id].Step2Robot.Pos] = true
-
-			case AntiClockWiseTurn:
-				TurnLeft(&robots[robot_id].Step2Robot)
-
-			case ClockWiseTurn:
-				TurnRight(&robots[robot_id].Step2Robot)
 			}
 		}
 		rep <- robots
